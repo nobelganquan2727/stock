@@ -13,5 +13,5 @@ SQLAlchemy>=2.0.0
 python-dotenv>=1.0.0
 
 # Charting
-mplfinance>=0.12.0
-matplotlib>=3.7.0
+mplfinance
+matplotlib
