@@ -7,6 +7,7 @@ W 底形态策略 (Double Bottom / W-Bottom)
   3. 两底之间有一个局部高点作为颈线
   4. 底部到颈线的深度 >= min_depth
   5. 当前收盘价接近或突破颈线（允许 breakout_tolerance 的误差）
+  6. 右底必须是近期形成，且当前价不能离底部过远，避免追几天前的信号
 
 评分: 已突破颈线 → 0.95，仅接近颈线 → 0.85
 """
@@ -34,6 +35,10 @@ class WBottomStrategy(BaseStrategy):
         接近颈线但未突破的容忍范围，默认 0.02（2%）
     local_window : int
         判断局部极值的左右窗口大小，默认 3
+    max_entry_age : int
+        右底距今天最多 K 线根数，默认 5
+    max_entry_extension : float
+        当前收盘价相对右底的最大涨幅，默认 0.08（8%）
     """
 
     def __init__(
@@ -44,6 +49,8 @@ class WBottomStrategy(BaseStrategy):
         min_depth: float = 0.05,
         breakout_tolerance: float = 0.02,
         local_window: int = 3,
+        max_entry_age: int = 5,
+        max_entry_extension: float = 0.08,
     ):
         self.price_tolerance = price_tolerance
         self.min_width = min_width
@@ -51,6 +58,8 @@ class WBottomStrategy(BaseStrategy):
         self.min_depth = min_depth
         self.breakout_tolerance = breakout_tolerance
         self.local_window = local_window
+        self.max_entry_age = max_entry_age
+        self.max_entry_extension = max_entry_extension
 
     @property
     def name(self) -> str:
@@ -92,6 +101,11 @@ class WBottomStrategy(BaseStrategy):
         for i in range(len(lows) - 1, 0, -1):
             r_idx = lows[i]
             r_price = data.iloc[r_idx]["low"]
+            bars_since_right = len(data) - 1 - r_idx
+            if bars_since_right > self.max_entry_age:
+                continue
+            if current_close > r_price * (1 + self.max_entry_extension):
+                continue
 
             for j in range(i - 1, max(i - 8, -1), -1):
                 l_idx = lows[j]
@@ -132,6 +146,8 @@ class WBottomStrategy(BaseStrategy):
                             "neckline": round(neckline, 2),
                             "depth_pct": round(depth * 100, 2),
                             "width_bars": width,
+                            "bars_since_right_bottom": bars_since_right,
+                            "entry_extension_pct": round((current_close - r_price) / r_price * 100, 2),
                             "breakout_pct": round(breakout_pct * 100, 2),
                         },
                     )

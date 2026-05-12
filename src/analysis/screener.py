@@ -64,6 +64,13 @@ def get_all_codes(engine, exclude_etf: bool = True) -> List[str]:
         return [r[0] for r in rows]
 
 
+def get_market_latest_date(engine):
+    """获取数据库中最新的交易日，用于过滤数据断档的股票"""
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT MAX(date) FROM daily_stock_data")).first()
+        return pd.to_datetime(row[0]) if row and row[0] else None
+
+
 def get_stock_data(engine, code: str, n: int = LOOKBACK_DAYS) -> pd.DataFrame:
     q = text("""
         SELECT date, open, high, low, close, volume
@@ -82,8 +89,8 @@ def get_stock_data(engine, code: str, n: int = LOOKBACK_DAYS) -> pd.DataFrame:
 STRATEGIES = [
     MAStrategy(),
     ReversalCandleStrategy(),
-    WBottomStrategy(),
-    HSBottomStrategy(),
+    # WBottomStrategy(),
+    # HSBottomStrategy(),
     SupportBounceStrategy(),
 ]
 
@@ -120,18 +127,30 @@ def run_screener(
         engine = get_engine()
 
     codes = get_all_codes(engine, exclude_etf=exclude_etf)
+    market_latest_date = get_market_latest_date(engine)
 
     print(f"\n{'='*70}")
     print(f"  多策略综合选股扫描")
     print(f"  策略: {' | '.join(s.name for s in STRATEGIES)}")
     print(f"  扫描: {len(codes)} 只{'股票' if exclude_etf else '标的'}")
+    if market_latest_date is not None:
+        print(f"  最新交易日: {market_latest_date.strftime('%Y-%m-%d')}")
     print(f"{'='*70}\n")
 
     results: List[StockSignal] = []
+    skipped_stale = 0
 
     for i, code in enumerate(codes, 1):
         try:
             data = get_stock_data(engine, code)
+            if data.empty:
+                continue
+
+            latest_date = data.iloc[-1]["date"]
+            if market_latest_date is not None and latest_date < market_latest_date:
+                skipped_stale += 1
+                continue
+
             sig = analyze_stock(data, code)
             if sig and sig.strategy_count >= min_strategies:
                 results.append(sig)
@@ -139,9 +158,11 @@ def run_screener(
             pass
 
         if i % 100 == 0:
-            print(f"  ... {i}/{len(codes)}  发现 {len(results)} 个信号")
+            print(f"  ... {i}/{len(codes)}  发现 {len(results)} 个信号  跳过过期 {skipped_stale} 只")
 
     results.sort(key=lambda x: (x.strategy_count, x.total_score), reverse=True)
+    if skipped_stale:
+        print(f"⚠️ 跳过 {skipped_stale} 只数据不是最新交易日的标的")
     print(f"\n✅ 共发现 {len(results)} 个信号，返回前 {min(top_n, len(results))} 个\n")
     return results[:top_n]
 

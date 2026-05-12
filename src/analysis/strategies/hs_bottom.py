@@ -7,6 +7,7 @@
   3. 两肩价格相近，高度差 <= shoulder_diff
   4. 颈线由头两侧各自的局部高点决定（取两侧最高点的均值）
   5. 当前收盘价接近或突破颈线（允许 price_tolerance 误差）
+  6. 右肩必须是近期形成，避免把已经涨上去的旧形态继续当作今日入场
 
 评分: 已突破颈线 → 0.95，仅接近颈线 → 0.88
 """
@@ -30,6 +31,10 @@ class HSBottomStrategy(BaseStrategy):
         两肩高度差最大比例，默认 0.06（6%）
     local_window : int
         判断局部极值的左右窗口大小，默认 3
+    max_entry_age : int
+        右肩距今天最多 K 线根数，默认 5
+    max_entry_extension : float
+        当前收盘价相对右肩低点的最大涨幅，默认 0.08（8%）
     """
 
     def __init__(
@@ -38,11 +43,15 @@ class HSBottomStrategy(BaseStrategy):
         price_tolerance: float = 0.02,
         shoulder_diff: float = 0.06,
         local_window: int = 3,
+        max_entry_age: int = 5,
+        max_entry_extension: float = 0.08,
     ):
         self.max_width = max_width
         self.price_tolerance = price_tolerance
         self.shoulder_diff = shoulder_diff
         self.local_window = local_window
+        self.max_entry_age = max_entry_age
+        self.max_entry_extension = max_entry_extension
 
     @property
     def name(self) -> str:
@@ -87,10 +96,15 @@ class HSBottomStrategy(BaseStrategy):
                 continue
             if r_idx - l_idx > self.max_width:
                 continue
+            bars_since_right = len(data) - 1 - r_idx
+            if bars_since_right > self.max_entry_age:
+                continue
 
             l_price = data.iloc[l_idx]["low"]
             h_price = data.iloc[h_idx]["low"]   # 头（最低点）
             r_price = data.iloc[r_idx]["low"]
+            if current_close > r_price * (1 + self.max_entry_extension):
+                continue
 
             # 头必须是最低点
             if not (h_price < l_price and h_price < r_price):
@@ -127,6 +141,8 @@ class HSBottomStrategy(BaseStrategy):
                         "neckline": round(neckline, 2),
                         "shoulder_diff_pct": round(abs(l_price - r_price) / l_price * 100, 2),
                         "width_bars": r_idx - l_idx,
+                        "bars_since_right_shoulder": bars_since_right,
+                        "entry_extension_pct": round((current_close - r_price) / r_price * 100, 2),
                         "breakout_pct": round(breakout_pct * 100, 2),
                     },
                 )
