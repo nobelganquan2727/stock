@@ -214,7 +214,7 @@ class SupportBounceStrategy(BaseStrategy):
             tests, last_test_i = self._count_tests(data, support_price, cand["idx"], cur_i - 1)
             if cur_i - last_test_i >= self.min_test_gap:
                 tests += 1
-            elif price_to_support > self.near_tolerance:
+            elif price_to_support > self.near_tolerance / 2:
                 continue
             if tests < self.min_tests:
                 continue
