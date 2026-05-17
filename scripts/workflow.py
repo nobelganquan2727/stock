@@ -95,7 +95,7 @@ def send_result_charts(results, engine, top_n=10, days=90):
 def main():
     parser = argparse.ArgumentParser(description="完整工作流: 抓取 -> 选股 -> 飞书通知")
     parser.add_argument("--skip-fetch", action="store_true", help="跳过抓取数据步骤")
-    parser.add_argument("--top", type=int, default=20, help="最多发送多少个结果到飞书")
+    parser.add_argument("--top", type=int, default=30, help="最多发送多少个结果到飞书")
     parser.add_argument("--no-charts", action="store_true", help="不发送 K 线图")
     parser.add_argument("--chart-days", type=int, default=90, help="K 线图展示最近 N 天（默认 90）")
     args = parser.parse_args()

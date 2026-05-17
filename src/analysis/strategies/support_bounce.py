@@ -2,7 +2,8 @@
 颈线/支撑位反弹策略 (Support Line Bounce)
 
 逻辑:
-  1. 在过去 lookback 天内，找出局部低点作为候选支撑位
+  1. 参考 day0market/support_resistance 的 RawPriceClusterLevels 思路：
+     先从近 lookback 根 K 线中找 low pivot，再把相近 pivot 聚类为支撑位
   2. 「测试」定义: 最低价在支撑价 ± support_tolerance 范围内，
      或短暂跌破但当日收盘仍在支撑区上方（假跌破）
   3. 支撑位形成后不能被有效跌破
@@ -14,6 +15,7 @@
 
 import pandas as pd
 from typing import List, Dict
+from statistics import median
 from .base import BaseStrategy, SignalResult
 
 
@@ -42,7 +44,11 @@ class SupportBounceStrategy(BaseStrategy):
     min_support_age : int
         支撑位距今最少 N 根 K 线（过近的不算支撑），默认 15
     local_window : int
-        判断局部低点的左右窗口大小，默认 5
+        判断 low pivot 的左右窗口大小，默认 5
+    merge_percent : float
+        相近 pivot 合并为同一支撑位的价格距离，默认 0.03（3%）
+    min_pivots_per_level : int
+        一个聚类支撑位至少需要包含的 pivot 数，默认 1
     support_zone_position : float
         支撑候选必须处于近 lookback 区间价格低位，默认 0.4
     """
@@ -59,6 +65,8 @@ class SupportBounceStrategy(BaseStrategy):
         max_support_age: int = 60,
         min_support_age: int = 15,
         local_window: int = 5,
+        merge_percent: float = 0.03,
+        min_pivots_per_level: int = 1,
         support_zone_position: float = 0.4,
     ):
         self.lookback = lookback
@@ -71,6 +79,8 @@ class SupportBounceStrategy(BaseStrategy):
         self.max_support_age = max_support_age
         self.min_support_age = min_support_age
         self.local_window = local_window
+        self.merge_percent = merge_percent
+        self.min_pivots_per_level = min_pivots_per_level
         self.support_zone_position = support_zone_position
 
     @property
@@ -98,8 +108,8 @@ class SupportBounceStrategy(BaseStrategy):
         )
         return is_touch or is_fake_break
 
-    def _local_lows(self, data: pd.DataFrame, start_i: int, end_i: int) -> List[int]:
-        """找回溯区间内的局部低点，避免只盯绝对最低的旧低点。"""
+    def _pivot_lows(self, data: pd.DataFrame, start_i: int, end_i: int) -> List[int]:
+        """使用 rolling min 的方式寻找 low pivot，等价于 RawPriceClusterLevels 的 peak 过滤。"""
         window = self.local_window
         lows = []
         left = max(window, start_i)
@@ -109,25 +119,55 @@ class SupportBounceStrategy(BaseStrategy):
                 lows.append(i)
         return lows
 
+    def _cluster_pivots_to_levels(self, data: pd.DataFrame, pivot_indices: List[int]) -> List[Dict]:
+        """把相近 pivot 聚类为支撑位，采用 median 作为 level 价格。"""
+        clusters: List[List[int]] = []
+        for idx in sorted(pivot_indices, key=lambda i: data.iloc[i]["low"]):
+            price = data.iloc[idx]["low"]
+            placed = False
+            for cluster in clusters:
+                cluster_price = median([data.iloc[i]["low"] for i in cluster])
+                if abs(price - cluster_price) / cluster_price <= self.merge_percent:
+                    cluster.append(idx)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append([idx])
+
+        levels = []
+        for cluster in clusters:
+            if len(cluster) < self.min_pivots_per_level:
+                continue
+            price = float(median([data.iloc[i]["low"] for i in cluster]))
+            first_idx = min(cluster)
+            last_idx = max(cluster)
+            levels.append({
+                "idx": first_idx,
+                "last_idx": last_idx,
+                "date": data.iloc[first_idx]["date"],
+                "last_date": data.iloc[last_idx]["date"],
+                "low": price,
+                "pivot_count": len(cluster),
+            })
+        return levels
+
     def _support_candidates(self, data: pd.DataFrame, lb_start: int, cur_i: int) -> List[Dict]:
-        """按低位局部低点优先生成候选支撑，避免把高位平台当底部支撑。"""
+        """按聚类后的低位 pivot level 生成候选支撑。"""
         recent = data.iloc[lb_start:cur_i]
         low_floor = recent["low"].min()
         high_ceiling = recent["high"].max()
         max_support_price = low_floor + (high_ceiling - low_floor) * self.support_zone_position
 
-        local_low_indices = self._local_lows(data, lb_start, cur_i - 1)
-        indices = [
-            i for i in local_low_indices
-            if data.iloc[i]["low"] <= max_support_price
+        pivot_indices = self._pivot_lows(data, lb_start, cur_i - 1)
+        levels = [
+            level for level in self._cluster_pivots_to_levels(data, pivot_indices)
+            if level["low"] <= max_support_price
         ]
-        if not indices:
-            indices = data.iloc[lb_start:cur_i].nsmallest(8, "low").index.tolist()
-        indices = sorted(set(indices), reverse=True)
-        return [
-            {"idx": i, "date": data.iloc[i]["date"], "low": data.iloc[i]["low"]}
-            for i in indices
-        ]
+        if not levels:
+            fallback_indices = data.iloc[lb_start:cur_i].nsmallest(8, "low").index.tolist()
+            levels = self._cluster_pivots_to_levels(data, fallback_indices)
+
+        return sorted(levels, key=lambda x: (x["last_idx"], x["low"]), reverse=True)
 
     def _count_tests(
         self, data: pd.DataFrame, support_price: float, start_i: int, end_i: int
@@ -190,7 +230,7 @@ class SupportBounceStrategy(BaseStrategy):
             support_date = pd.to_datetime(cand["date"])
             cur_date = pd.to_datetime(cur["date"])
 
-            bars_ago = cur_i - cand["idx"]
+            bars_ago = cur_i - cand["last_idx"]
             days_ago = (cur_date - support_date).days
             if not (self.min_support_age <= bars_ago <= self.max_support_age):
                 continue
@@ -227,6 +267,8 @@ class SupportBounceStrategy(BaseStrategy):
                 details={
                     "support_price": round(support_price, 2),
                     "support_date": str(support_date)[:10],
+                    "last_pivot_date": str(pd.to_datetime(cand["last_date"]))[:10],
+                    "pivot_count": cand.get("pivot_count", 1),
                     "test_count": tests,
                     "bars_ago": bars_ago,
                     "days_ago": days_ago,
