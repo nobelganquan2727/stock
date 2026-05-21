@@ -753,7 +753,7 @@ def get_all_stock_codes() -> List[str]:
     all_codes.update(SZ50_CODES)
     all_codes.update(HS300_CORE_CODES)
     all_codes.update(ZZ500_CODES)
-    all_codes.update(ZZ1000_CODES)
+    all_codes.update(ZZ1000_CODES[:1000])
     all_codes.update(GZ2000_CODES)
     return sorted(list(all_codes))
 
