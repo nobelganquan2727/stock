@@ -14,14 +14,17 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 from datetime import datetime
 from sqlalchemy import text
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from db import get_engine
+from stock_symbols import get_all_stock_codes, get_etf_codes
 from analysis.strategies import (
     MAStrategy,
     ReversalCandleStrategy,
     WBottomStrategy,
     HSBottomStrategy,
     SupportBounceStrategy,
+    LimitUpConfirmationStrategy,
 )
 from analysis.strategies.base import SignalResult
 
@@ -52,16 +55,11 @@ class StockSignal:
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def get_all_codes(engine, exclude_etf: bool = True) -> List[str]:
-    with engine.connect() as conn:
-        if exclude_etf:
-            rows = conn.execute(text(
-                "SELECT DISTINCT code FROM daily_stock_data "
-                "WHERE code NOT LIKE '51%.SS' AND code NOT LIKE '15%.SZ' "
-                "AND code NOT LIKE '56%.SS' AND code NOT LIKE '16%.SZ'"
-            ))
-        else:
-            rows = conn.execute(text("SELECT DISTINCT code FROM daily_stock_data"))
-        return [r[0] for r in rows]
+    codes = get_all_stock_codes()
+    if not exclude_etf:
+        codes.extend(get_etf_codes())
+        codes = list(set(codes))
+    return sorted(codes)
 
 
 def get_market_latest_date(engine):
@@ -87,11 +85,12 @@ def get_stock_data(engine, code: str, n: int = LOOKBACK_DAYS) -> pd.DataFrame:
 # ── Screener ─────────────────────────────────────────────────────────────────
 
 STRATEGIES = [
-    MAStrategy(),
-    ReversalCandleStrategy(),
+    # MAStrategy(),
+    # ReversalCandleStrategy(),
     # WBottomStrategy(),
     # HSBottomStrategy(),
-    SupportBounceStrategy(),
+    # SupportBounceStrategy(),
+    LimitUpConfirmationStrategy(),
 ]
 
 
@@ -139,26 +138,40 @@ def run_screener(
 
     results: List[StockSignal] = []
     skipped_stale = 0
+    total_codes = len(codes)
 
-    for i, code in enumerate(codes, 1):
+    def process_single_stock(code: str):
         try:
             data = get_stock_data(engine, code)
             if data.empty:
-                continue
+                return None, False
 
             latest_date = data.iloc[-1]["date"]
             if market_latest_date is not None and latest_date < market_latest_date:
-                skipped_stale += 1
-                continue
+                return None, True
 
             sig = analyze_stock(data, code)
             if sig and sig.strategy_count >= min_strategies:
-                results.append(sig)
+                return sig, False
         except Exception:
             pass
+        return None, False
 
-        if i % 100 == 0:
-            print(f"  ... {i}/{len(codes)}  发现 {len(results)} 个信号  跳过过期 {skipped_stale} 只")
+    print("🚀 开始多线程扫描 (8 线程)...")
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(process_single_stock, code): code for code in codes}
+        for i, future in enumerate(as_completed(futures), 1):
+            try:
+                sig, is_stale = future.result()
+                if is_stale:
+                    skipped_stale += 1
+                elif sig:
+                    results.append(sig)
+            except Exception:
+                pass
+
+            if i % 100 == 0 or i == total_codes:
+                print(f"  ... {i}/{total_codes}  发现 {len(results)} 个信号  跳过过期 {skipped_stale} 只")
 
     results.sort(key=lambda x: (x.strategy_count, x.total_score), reverse=True)
     if skipped_stale:
@@ -190,6 +203,8 @@ def print_results(results: List[StockSignal], top_n: int = 30) -> None:
                 print(f"      → 颈线={d.get('neckline')}  深度={d.get('depth_pct','')}%  突破={d.get('breakout_pct','')}%")
             elif "support_price" in d:
                 print(f"      → 支撑={d.get('support_price')}  测试{d.get('test_count')}次  距今{d.get('days_ago')}天")
+            elif "limit_up_date" in d:
+                print(f"      → 涨停日={d.get('limit_up_date')}  距今={d.get('days_since_limit_up')}天  涨停价={d.get('limit_up_close')}  现价={d.get('current_close')}")
         print()
 
 

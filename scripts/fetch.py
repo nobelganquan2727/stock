@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--no-stocks", action="store_true", help="不抓股票")
     parser.add_argument("--no-etfs", action="store_true", help="不抓 ETF")
     parser.add_argument("--workers", type=int, default=4, help="并发数 (默认 4)")
-    parser.add_argument("--start", default="2025-01-01", help="默认起始日 (默认 2025-01-01)")
+    parser.add_argument("--start", default="2026-01-01", help="默认起始日 (默认 2025-01-01)")
     args = parser.parse_args()
 
     print("=" * 60)
