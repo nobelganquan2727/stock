@@ -120,12 +120,14 @@ def run_fetch_job(
     codes: list,
     max_workers: int = 4,
     fetcher_type: str = "yfinance",
-    default_start: str = "2025-01-01",
+    default_start: str = None,
 ):
-    """并发抓取多只股票并写入 DB"""
+    """并发抓取多只股票并写入 DB。default_start 默认近 2 年。"""
+    if default_start is None:
+        default_start = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
     end_date = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     fetcher = YFinanceFetcher() if fetcher_type == "yfinance" else AkShareFetcher()
-    print(f"Fetcher: {fetcher.__class__.__name__}  end_date={end_date}")
+    print(f"Fetcher: {fetcher.__class__.__name__}  start={default_start}  end_date={end_date}")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {

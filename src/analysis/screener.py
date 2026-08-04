@@ -1,8 +1,8 @@
 """
 综合选股扫描器
 
-从数据库读取所有股票数据，逐一运行所有策略，
-按满足策略数量 + 总分排序，输出 top N。
+默认只扫描核心自选池（50 只），主策略为「历史低点」。
+从数据库读取近 ~2 年日线，逐一跑策略，按分数排序输出。
 """
 
 import sys
@@ -11,25 +11,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import pandas as pd
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import List, Optional
 from datetime import datetime
 from sqlalchemy import text
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from db import get_engine
-from stock_symbols import get_all_stock_codes, get_etf_codes
-from analysis.strategies import (
-    MAStrategy,
-    ReversalCandleStrategy,
-    WBottomStrategy,
-    HSBottomStrategy,
-    SupportBounceStrategy,
-    LimitUpConfirmationStrategy,
-)
+from watchlist import get_watchlist_codes, get_stock_name
+from analysis.strategies import HistoricalLowStrategy
 from analysis.strategies.base import SignalResult
 
 
-LOOKBACK_DAYS = 120
+# ~2 年交易日（含缓冲）
+LOOKBACK_DAYS = 520
 
 
 @dataclass
@@ -37,6 +31,7 @@ class StockSignal:
     code: str
     date: str
     price: float
+    name: str = ""
     signals: List[SignalResult] = field(default_factory=list)
 
     @property
@@ -55,11 +50,9 @@ class StockSignal:
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def get_all_codes(engine, exclude_etf: bool = True) -> List[str]:
-    codes = get_all_stock_codes()
-    if not exclude_etf:
-        codes.extend(get_etf_codes())
-        codes = list(set(codes))
-    return sorted(codes)
+    """当前策略只关心核心自选池；exclude_etf 保留兼容参数。"""
+    del engine, exclude_etf
+    return get_watchlist_codes()
 
 
 def get_market_latest_date(engine):
@@ -85,22 +78,18 @@ def get_stock_data(engine, code: str, n: int = LOOKBACK_DAYS) -> pd.DataFrame:
 # ── Screener ─────────────────────────────────────────────────────────────────
 
 STRATEGIES = [
-    # MAStrategy(),
-    # ReversalCandleStrategy(),
-    # WBottomStrategy(),
-    # HSBottomStrategy(),
-    # SupportBounceStrategy(),
-    LimitUpConfirmationStrategy(),
+    HistoricalLowStrategy(tolerance_pct=1.0, min_bars=120),
 ]
 
 
 def analyze_stock(data: pd.DataFrame, code: str) -> Optional[StockSignal]:
-    if len(data) < 70:
+    if len(data) < 120:
         return None
 
     last = data.iloc[-1]
     signal = StockSignal(
         code=code,
+        name=get_stock_name(code),
         date=last["date"].strftime("%Y-%m-%d"),
         price=round(last["close"], 2),
     )
@@ -129,9 +118,9 @@ def run_screener(
     market_latest_date = get_market_latest_date(engine)
 
     print(f"\n{'='*70}")
-    print(f"  多策略综合选股扫描")
+    print(f"  核心自选池 · 历史低点扫描")
     print(f"  策略: {' | '.join(s.name for s in STRATEGIES)}")
-    print(f"  扫描: {len(codes)} 只{'股票' if exclude_etf else '标的'}")
+    print(f"  扫描: {len(codes)} 只股票（近 {LOOKBACK_DAYS} 根日线）")
     if market_latest_date is not None:
         print(f"  最新交易日: {market_latest_date.strftime('%Y-%m-%d')}")
     print(f"{'='*70}\n")
@@ -157,7 +146,7 @@ def run_screener(
             pass
         return None, False
 
-    print("🚀 开始多线程扫描 (8 线程)...")
+    print("🚀 开始扫描自选池...")
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {executor.submit(process_single_stock, code): code for code in codes}
         for i, future in enumerate(as_completed(futures), 1):
@@ -170,7 +159,7 @@ def run_screener(
             except Exception:
                 pass
 
-            if i % 100 == 0 or i == total_codes:
+            if i % 10 == 0 or i == total_codes:
                 print(f"  ... {i}/{total_codes}  发现 {len(results)} 个信号  跳过过期 {skipped_stale} 只")
 
     results.sort(key=lambda x: (x.strategy_count, x.total_score), reverse=True)
@@ -182,29 +171,28 @@ def run_screener(
 
 def print_results(results: List[StockSignal], top_n: int = 30) -> None:
     if not results:
-        print("❌ 未找到任何信号。")
+        print("❌ 未找到任何触及历史低点的股票。")
         return
 
     print(f"\n{'='*70}")
-    print(f"  选股结果 (前 {min(top_n, len(results))} 名)")
+    print(f"  历史低点提醒 (前 {min(top_n, len(results))} 名)")
     print(f"{'='*70}\n")
 
     for rank, r in enumerate(results[:top_n], 1):
-        stars = "⭐" * r.strategy_count
-        print(f"#{rank:<3} {r.code:<14} ¥{r.price:<8.2f}  {stars} ({r.strategy_count} 策略)")
+        name = r.name or get_stock_name(r.code)
+        print(f"#{rank:<3} {r.code:<14} {name:<8} ¥{r.price:<8.2f}")
         print(f"      {' | '.join(r.strategy_names)}")
         for sig in r.signals:
             d = sig.details
-            if "pattern" in d:
-                print(f"      → {d['pattern']}  趋势={d.get('trend','')}  MA5/20={d.get('dist_pct','')}%")
-            elif "engulfing" in d:
-                print(f"      → 连跌 {d.get('down_days')}天 {d.get('total_decline_pct')}%  量比×{d.get('volume_ratio')}")
-            elif "neckline" in d:
-                print(f"      → 颈线={d.get('neckline')}  深度={d.get('depth_pct','')}%  突破={d.get('breakout_pct','')}%")
-            elif "support_price" in d:
-                print(f"      → 支撑={d.get('support_price')}  测试{d.get('test_count')}次  距今{d.get('days_ago')}天")
-            elif "limit_up_date" in d:
-                print(f"      → 涨停日={d.get('limit_up_date')}  距今={d.get('days_since_limit_up')}天  涨停价={d.get('limit_up_close')}  现价={d.get('current_close')}")
+            if "hist_low" in d:
+                flag = "🔥新低" if d.get("is_new_low") else "逼近"
+                print(
+                    f"      → {d.get('pattern', flag)}  "
+                    f"历史低={d.get('hist_low')} ({d.get('hist_low_date')})  "
+                    f"现价={d.get('current_close')}  "
+                    f"距低点={d.get('dist_pct')}%  "
+                    f"窗口={d.get('lookback_days')}日"
+                )
         print()
 
 
@@ -214,14 +202,19 @@ def save_results(results: List[StockSignal], output_dir: str = ".") -> str:
     today = datetime.now().strftime("%Y%m%d")
     rows = []
     for i, r in enumerate(results):
+        detail = r.signals[0].details if r.signals else {}
         rows.append({
             "rank": i + 1,
             "code": r.code,
+            "name": r.name or get_stock_name(r.code),
             "date": r.date,
             "price": r.price,
             "strategy_count": r.strategy_count,
             "strategies": " | ".join(r.strategy_names),
             "total_score": round(r.total_score, 2),
+            "hist_low": detail.get("hist_low"),
+            "dist_pct": detail.get("dist_pct"),
+            "is_new_low": detail.get("is_new_low"),
         })
     path = os.path.join(output_dir, f"stock_picks_{today}.csv")
     pd.DataFrame(rows).to_csv(path, index=False, encoding="utf-8-sig")
@@ -232,10 +225,10 @@ def save_results(results: List[StockSignal], output_dir: str = ".") -> str:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="多策略综合选股")
+    parser = argparse.ArgumentParser(description="核心自选池 · 历史低点扫描")
     parser.add_argument("--min-strategies", type=int, default=1, help="最少满足策略数")
-    parser.add_argument("--top", type=int, default=30, help="显示前 N 个")
-    parser.add_argument("--include-etf", action="store_true", help="包含 ETF")
+    parser.add_argument("--top", type=int, default=50, help="显示前 N 个")
+    parser.add_argument("--include-etf", action="store_true", help="兼容参数，已忽略")
     args = parser.parse_args()
 
     engine = get_engine()

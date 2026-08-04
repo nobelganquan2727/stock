@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """
-选股扫描入口
+选股扫描入口（核心自选池 · 历史低点）
 
 用法:
-    python scripts/scan.py                  # 默认：全部策略，min 1 策略
-    python scripts/scan.py --min-strategies 2
-    python scripts/scan.py --top 50
-    python scripts/scan.py --include-etf
-    python scripts/scan.py --strategy ma    # 只跑单一策略
+    python scripts/scan.py
+    python scripts/scan.py --top 20
 """
 
 import sys, os
@@ -19,10 +16,10 @@ from analysis.screener import run_screener, print_results, save_results
 
 
 def main():
-    parser = argparse.ArgumentParser(description="多策略选股扫描")
+    parser = argparse.ArgumentParser(description="核心自选池 · 历史低点扫描")
     parser.add_argument("--min-strategies", type=int, default=1)
-    parser.add_argument("--top", type=int, default=30)
-    parser.add_argument("--include-etf", action="store_true")
+    parser.add_argument("--top", type=int, default=50)
+    parser.add_argument("--include-etf", action="store_true", help="兼容参数，已忽略")
     args = parser.parse_args()
 
     engine = get_engine()
