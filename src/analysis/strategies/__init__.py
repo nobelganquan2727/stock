@@ -4,6 +4,7 @@ from .w_bottom import WBottomStrategy
 from .hs_bottom import HSBottomStrategy
 from .support_bounce import SupportBounceStrategy
 from .limit_up_confirmation import LimitUpConfirmationStrategy
+from .historical_low import HistoricalLowStrategy
 
 __all__ = [
     "MAStrategy",
@@ -12,4 +13,5 @@ __all__ = [
     "HSBottomStrategy",
     "SupportBounceStrategy",
     "LimitUpConfirmationStrategy",
+    "HistoricalLowStrategy",
 ]

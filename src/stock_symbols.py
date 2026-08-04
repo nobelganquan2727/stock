@@ -748,7 +748,18 @@ def get_index_codes(index_name: str) -> List[str]:
 
 
 def get_all_stock_codes() -> List[str]:
-    """获取所有股票代码（去重）"""
+    """
+    获取当前策略关注的股票代码。
+
+    已切换为核心自选池（50 只），不再扫描全市场指数成分股。
+    如需旧的指数成分，请使用 get_index_codes() / get_legacy_universe_codes()。
+    """
+    from watchlist import get_watchlist_codes
+    return get_watchlist_codes()
+
+
+def get_legacy_universe_codes() -> List[str]:
+    """旧版全市场指数成分并集（去重），仅保留兼容用途"""
     all_codes = set()
     all_codes.update(SZ50_CODES)
     all_codes.update(HS300_CORE_CODES)
@@ -775,16 +786,21 @@ def get_a500_codes() -> List[str]:
 
 
 if __name__ == "__main__":
-    print("=== 指数成分股统计 ===")
+    from watchlist import get_watchlist_codes
+
+    print("=== 当前策略自选池 ===")
+    watch = get_watchlist_codes()
+    print(f"核心自选池: {len(watch)} 只")
+    print(f"get_all_stock_codes(): {len(get_all_stock_codes())} 只")
+
+    print("\n=== 旧指数成分（兼容） ===")
     print(f"上证50: {len(SZ50_CODES)} 只")
     print(f"沪深300(核心): {len(HS300_CORE_CODES)} 只")
     print(f"中证500: {len(ZZ500_CODES)} 只")
     print(f"中证1000: {len(ZZ1000_CODES)} 只")
     print(f"国证2000: {len(GZ2000_CODES)} 只")
-    
-    all_stocks = get_all_stock_codes()
-    print(f"\n总计股票（去重）: {len(all_stocks)} 只")
-    
+    print(f"旧全市场并集: {len(get_legacy_universe_codes())} 只")
+
     print("\n=== ETF统计 ===")
     for category, etfs in ETF_LIST.items():
         print(f"{category}: {len(etfs)} 只")
